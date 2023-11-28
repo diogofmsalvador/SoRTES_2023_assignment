@@ -1,0 +1,2 @@
+osource "/Users/dsalvador/Desktop/KU_LEUVEN/Software_for_Real_Time_and_Embedded_Systems/bt-fund/lesson1/blefund_less1_exer1/boards/shields/*/Kconfig.defconfig"
+osource "/opt/nordic/ncs/v2.5.0-rc2/nrf/boards/shields/*/Kconfig.defconfig"
