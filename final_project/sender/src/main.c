@@ -5,9 +5,11 @@
 #include <zephyr/usb/usbd.h>
 #include <zephyr/drivers/uart.h>
 
-#include <zephyr/device.h>
 #include <zephyr/drivers/sensor.h>
-#include <zephyr/logging/log.h>
+#include <stdio.h>
+
+static double high_temp;
+static double low_temp;
 
 /* STEP 2 - Define stack size and scheduling priority used by each thread */
 #define STACKSIZE 1024 
@@ -15,58 +17,113 @@
 #define THREADB_PRIORITY 7
 #define THREADC_PRIORITY 7
 
-LOG_MODULE_REGISTER(Info, LOG_LEVEL_INF);
-
-static const struct device *temp_dev = DEVICE_DT_GET_ANY(nordic_nrf_temp);
-
-/*** Time measure functions ***/
-void Duration_Timer_Init()
+int read_temperature(const struct device *dev, struct sensor_value *val)
 {
-	NRF_TIMER4->TASKS_START = 1;
-	NRF_TIMER4->PRESCALER = 1;
+	int ret;
+
+	ret = sensor_sample_fetch_chan(dev, SENSOR_CHAN_AMBIENT_TEMP);
+	if (ret < 0) {
+		printf("Could not fetch temperature: %d\n", ret);
+		return ret;
+	}
+
+	ret = sensor_channel_get(dev, SENSOR_CHAN_AMBIENT_TEMP, val);
+	if (ret < 0) {
+		printf("Could not get temperature: %d\n", ret);
+	}
+	return ret;
 }
 
-void Duration_Timer_Start()
+void temp_alert_handler(const struct device *dev, const struct sensor_trigger *trig)
 {
-	NRF_TIMER4->TASKS_CLEAR = 1;
-	NRF_TIMER4->TASKS_CAPTURE[0] = 1;
-}
+	int ret;
+	struct sensor_value value;
+	double temp;
 
-void Duration_Timer_Stop()
-{
-	NRF_TIMER4->TASKS_CAPTURE[1] = 1;
-	uint32_t start = NRF_TIMER4->CC[0];
-	uint32_t stop = NRF_TIMER4->CC[1];
-	LOG_INF("Function duration [us]: %d", (stop - start) >> 3);	
-}
-
-/*** Performs a temperature measurement of the MCU and returns its value in degrees C ***/
-static int16_t Temperature_Sensor_Get_Data()
-{
-	struct sensor_value temp_value;
-	int err;
-
-	Duration_Timer_Start();
-    err = sensor_sample_fetch_chan(temp_dev, SENSOR_CHAN_AMBIENT_TEMP);
-	Duration_Timer_Stop();
-
-    if(err) 
-        LOG_ERR("sensor_sample_fetch failed with error: %d", err);
-
-    err = sensor_channel_get(temp_dev, SENSOR_CHAN_AMBIENT_TEMP, &temp_value);
-    if(err) 
-        LOG_ERR("sensor_channel_get failed with error: %d", err);
-
-    return temp_value.val1;
+	/* Read sensor value */
+	ret = read_temperature(dev, &value);
+	if (ret < 0) {
+		printf("Reading temperature failed: %d\n", ret);
+		return;
+	}
+	temp = sensor_value_to_double(&value);
+	if (temp <= low_temp) {
+		printf("Temperature below threshold: %0.1f°C\n", temp);
+	} else if (temp >= high_temp) {
+		printf("Temperature above threshold: %0.1f°C\n", temp);
+	} else {
+		printf("Error: temperature alert triggered without valid condition\n");
+	}
 }
 
 void threadA(void)
 {
 	printk("Hello, I am thread0\n");
-	Duration_Timer_Init();
+	
+	const struct device *const dev = DEVICE_DT_GET(DT_ALIAS(ambient_temp0));
+	struct sensor_value value;
+	double temp;
+	int ret;
+	const struct sensor_trigger trig = {
+		.chan = SENSOR_CHAN_AMBIENT_TEMP,
+		.type = SENSOR_TRIG_THRESHOLD,
+	};
+
+	printf("Thermometer Example (%s)\n", CONFIG_ARCH);
+
+	if (!device_is_ready(dev)) {
+		printf("Device %s is not ready\n", dev->name);
+	}
+
+	printf("Temperature device is %p, name is %s\n", dev, dev->name);
+
+	/* First, fetch a sensor sample to use for sensor thresholds */
+	ret = read_temperature(dev, &value);
+	if (ret != 0) {
+		printf("Failed to read temperature: %d\n", ret);
+	}
+	temp = sensor_value_to_double(&value);
+
+	/* Set thresholds to +0.5 and +1.5 °C from ambient */
+	low_temp = temp + 0.5;
+	ret = sensor_value_from_double(&value, low_temp);
+	if (ret != 0) {
+		printf("Failed to convert low threshold to sensor value: %d\n", ret);
+	}
+	ret = sensor_attr_set(dev, SENSOR_CHAN_AMBIENT_TEMP,
+			      SENSOR_ATTR_LOWER_THRESH, &value);
+	if (ret == 0) {
+		/* This sensor supports threshold triggers */
+		printf("Set temperature lower limit to %0.1f°C\n", low_temp);
+	}
+
+	high_temp = temp + 1.5;
+	ret = sensor_value_from_double(&value, high_temp);
+	if (ret != 0) {
+		printf("Failed to convert low threshold to sensor value: %d\n", ret);
+	}
+	ret = sensor_attr_set(dev, SENSOR_CHAN_AMBIENT_TEMP,
+			      SENSOR_ATTR_UPPER_THRESH, &value);
+	if (ret == 0) {
+		/* This sensor supports threshold triggers */
+		printf("Set temperature upper limit to %0.1f°C\n", high_temp);
+	}
+
+	ret = sensor_trigger_set(dev, &trig, temp_alert_handler);
+	if (ret == 0) {
+		printf("Enabled sensor threshold triggers\n");
+	}
+
 	while (1) {
-		k_msleep(1000);
-		LOG_INF("MCU temperature [C]: %d", Temperature_Sensor_Get_Data());
+		ret = read_temperature(dev, &value);
+		if (ret != 0) {
+			printf("Failed to read temperature: %d\n", ret);
+			break;
+		}
+
+		printf("Temperature is %0.1lf°C\n", sensor_value_to_double(&value));
+
+		k_sleep(K_MSEC(1000));
 	}
 }
 
