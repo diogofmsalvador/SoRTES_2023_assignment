@@ -57,6 +57,7 @@
   "C_Cpp_Runner.useLinkTimeOptimization": false,
   "C_Cpp_Runner.msvcSecureNoWarnings": false,
   "nrf-connect.applications": [
-    "${workspaceFolder}/final_project/sender"
+    "${workspaceFolder}/final_project/sender",
+    "${workspaceFolder}/lab3/ex2"
   ]
 }

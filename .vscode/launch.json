@@ -6,8 +6,8 @@
       "type": "lldb",
       "request": "launch",
       "args": [],
-      "cwd": "/Users/dsalvador/Desktop/KU_LEUVEN/Software_for_Real_Time_and_Embedded_Systems/assignment/final_project/src",
-      "program": "/Users/dsalvador/Desktop/KU_LEUVEN/Software_for_Real_Time_and_Embedded_Systems/assignment/final_project/src/build/Debug/outDebug"
+      "cwd": "/Users/dsalvador/Desktop/KU_LEUVEN/Software_for_Real_Time_and_Embedded_Systems/assignment/final_project/sender/src",
+      "program": "/Users/dsalvador/Desktop/KU_LEUVEN/Software_for_Real_Time_and_Embedded_Systems/assignment/final_project/sender/src/build/Debug/outDebug"
     }
   ]
 }
