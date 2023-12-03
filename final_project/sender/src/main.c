@@ -15,18 +15,61 @@
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
 
+#include <string.h>
+#include <zephyr/bluetooth/conn.h>
 // Bluetooth configuration variables
 #define DEVICE_NAME CONFIG_BT_DEVICE_NAME
 #define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) - 1)
 
 static const struct bt_data ad[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-    BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
+    BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN)
 };
 
 static const struct bt_data sd[] = {
     BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
 };
+// Global variable for the connection
+extern struct bt_conn *conn_connected = NULL;
+
+/* Custom Service UUID */
+static struct bt_uuid_128 custom_service_uuid = BT_UUID_INIT_128(
+    /* UUID: 123e4567-e89b-12d3-a456-426655440000 */
+    0x00, 0x00, 0x44, 0x65, 0x66, 0x42, 0x56, 0xa4,
+    0xd3, 0x12, 0x9b, 0xe8, 0x67, 0x45, 0x3e, 0x12
+);
+
+/* Custom Characteristic UUID */
+static struct bt_uuid_128 custom_char_uuid = BT_UUID_INIT_128(
+    /* UUID: 123e4567-e89b-12d3-a456-426655440001 */
+    0x01, 0x00, 0x44, 0x65, 0x66, 0x42, 0x56, 0xa4,
+    0xd3, 0x12, 0x9b, 0xe8, 0x67, 0x45, 0x3e, 0x12
+);
+
+#define MAX_MESSAGE_LEN 30
+static char custom_message[MAX_MESSAGE_LEN] = "";
+
+static ssize_t read_utf8(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                         void *buf, uint16_t len, uint16_t offset)
+{
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, custom_message, strlen(custom_message));
+}
+
+
+
+static struct bt_gatt_attr attrs[] = {
+    BT_GATT_PRIMARY_SERVICE(&custom_service_uuid),
+    BT_GATT_CHARACTERISTIC(&custom_char_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,  // Added NOTIFY property
+                           BT_GATT_PERM_READ, 
+                           read_utf8, NULL, &custom_message), // Updated to reference custom_message
+};
+
+
+
+static struct bt_gatt_service my_service = BT_GATT_SERVICE(attrs);
+
+// METHODS
 
 static void connected(struct bt_conn *conn, uint8_t err)
 {
@@ -36,11 +79,16 @@ static void connected(struct bt_conn *conn, uint8_t err)
     }
 
     printk("Connected\n");
+    conn_connected = bt_conn_ref(conn);
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
     printk("Disconnected (reason %u)\n", reason);
+    if (conn == conn_connected) {
+        bt_conn_unref(conn_connected); // Release the reference
+        conn_connected = NULL; // Clear the connection reference
+    }
 }
 
 #ifdef CONFIG_BT_LBS_SECURITY_ENABLED
@@ -160,11 +208,23 @@ int calculate_average_temperature() {
 void threadB(void) {
     printk("threadB started\n");
     int send_count = 0;
+    char message[MAX_MESSAGE_LEN]; // Local buffer to hold the message
+
     while (send_count < 20) {
         if (reading_index >= 10) {
             int average_temp = calculate_average_temperature();
+            snprintf(message, sizeof(message), "T%02d|%02d|%02d", TEAM_NUMBER, send_count + 1, average_temp);
+
+            // Update the global custom_message
+            strncpy(custom_message, message, MAX_MESSAGE_LEN);
+
+            // Notify connected clients if any
+            if (conn_connected) {
+                bt_gatt_notify(NULL, &attrs[1], custom_message, strlen(custom_message));
+            }
+
             printf("Average Temperature: %dC\n", average_temp);
-            printf("T%02d|%02d|%02d\n", TEAM_NUMBER, send_count + 1, average_temp);
+            printf("%s\n", message);
             send_count++;
             k_sem_give(&threadB_sem);  // Signal threadC
         }
@@ -174,6 +234,8 @@ void threadB(void) {
     printk("Entering low-power mode\n");
     k_sleep(K_FOREVER);
 }
+
+
 
 void threadC(void) {
     printk("threadC started\n");
@@ -200,6 +262,7 @@ void threadC(void) {
     }
 }
 
+
 // Define and initialize threads
 K_THREAD_DEFINE(threadA_id, STACKSIZE, threadA, NULL, NULL, NULL, THREADA_PRIORITY, 0, 0);
 K_THREAD_DEFINE(threadB_id, STACKSIZE, threadB, NULL, NULL, NULL, THREADB_PRIORITY, 0, 0);
@@ -207,6 +270,7 @@ K_THREAD_DEFINE(threadC_id, STACKSIZE, threadC, NULL, NULL, NULL, THREADC_PRIORI
 
 /* Main function required to enable USB communication */
 int main() {
+
 
     if (usb_enable(NULL)) {
         printk("Failed to enable USB\n");
@@ -216,6 +280,8 @@ int main() {
     int err;
 
     printk("Starting Bluetooth Peripheral example\n");
+
+    /*
 
     if (IS_ENABLED(CONFIG_BT_LBS_SECURITY_ENABLED)) {
         err = bt_conn_auth_cb_register(&conn_auth_callbacks);
@@ -230,6 +296,8 @@ int main() {
             return 1;
         }
     }
+
+    */
 
     err = bt_enable(NULL);
     if (err) {
@@ -248,6 +316,9 @@ int main() {
         printk("Advertising failed to start (err %d)\n", err);
         return 1;
     }
+
+    printk("Initializing GATT service\n");
+    bt_gatt_service_register(&my_service);
 
     printk("Advertising successfully started\n");
 
