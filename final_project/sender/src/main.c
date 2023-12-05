@@ -34,14 +34,14 @@ extern struct bt_conn *conn_connected = NULL;
 
 /* Custom Service UUID */
 static struct bt_uuid_128 custom_service_uuid = BT_UUID_INIT_128(
-    /* UUID: 123e4567-e89b-12d3-a456-426655440000 */
+    /* UUID: 123e4567-e89b-12d3-a456-426665440000 */
     0x00, 0x00, 0x44, 0x65, 0x66, 0x42, 0x56, 0xa4,
     0xd3, 0x12, 0x9b, 0xe8, 0x67, 0x45, 0x3e, 0x12
 );
 
 /* Custom Characteristic UUID */
 static struct bt_uuid_128 custom_char_uuid = BT_UUID_INIT_128(
-    /* UUID: 123e4567-e89b-12d3-a456-426655440001 */
+    /* UUID: 123e4567-e89b-12d3-a456-426665440001 */
     0x01, 0x00, 0x44, 0x65, 0x66, 0x42, 0x56, 0xa4,
     0xd3, 0x12, 0x9b, 0xe8, 0x67, 0x45, 0x3e, 0x12
 );
@@ -60,9 +60,9 @@ static ssize_t read_utf8(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 static struct bt_gatt_attr attrs[] = {
     BT_GATT_PRIMARY_SERVICE(&custom_service_uuid),
     BT_GATT_CHARACTERISTIC(&custom_char_uuid.uuid,
-                           BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,  // Added NOTIFY property
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
                            BT_GATT_PERM_READ, 
-                           read_utf8, NULL, &custom_message), // Updated to reference custom_message
+                           read_utf8, NULL, &custom_message),
 };
 
 
@@ -211,6 +211,7 @@ void threadB(void) {
     char message[MAX_MESSAGE_LEN]; // Local buffer to hold the message
 
     while (send_count < 20) {
+        // Assuming this condition is your trigger to send a notification
         if (reading_index >= 10) {
             int average_temp = calculate_average_temperature();
             snprintf(message, sizeof(message), "T%02d|%02d|%02d", TEAM_NUMBER, send_count + 1, average_temp);
@@ -218,9 +219,13 @@ void threadB(void) {
             // Update the global custom_message
             strncpy(custom_message, message, MAX_MESSAGE_LEN);
 
-            // Notify connected clients if any
+            // Send notification if there is an active connection
             if (conn_connected) {
-                bt_gatt_notify(NULL, &attrs[1], custom_message, strlen(custom_message));
+                // Ensure the second parameter of bt_gatt_notify is the correct attribute
+                bt_gatt_notify(conn_connected, &attrs[1], custom_message, strlen(custom_message));
+                printk("Notification sent: %s\n", custom_message);
+            } else {
+                printk("No active connection, notification not sent.\n");
             }
 
             printf("Average Temperature: %dC\n", average_temp);
@@ -228,12 +233,12 @@ void threadB(void) {
             send_count++;
             k_sem_give(&threadB_sem);  // Signal threadC
         }
-        k_sleep(K_SECONDS(10));
+        k_sleep(K_SECONDS(10)); // Adjust this value as needed for your use case
     }
 
-    printk("Entering low-power mode\n");
-    k_sleep(K_FOREVER);
+    printk("threadB finished sending notifications\n");
 }
+
 
 
 

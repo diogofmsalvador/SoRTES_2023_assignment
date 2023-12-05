@@ -58,6 +58,7 @@
   "C_Cpp_Runner.msvcSecureNoWarnings": false,
   "nrf-connect.applications": [
     "${workspaceFolder}/final_project/sender",
-    "${workspaceFolder}/lab3/ex2"
+    "${workspaceFolder}/lab3/ex2",
+    "${workspaceFolder}/final_project/receiver"
   ]
 }
