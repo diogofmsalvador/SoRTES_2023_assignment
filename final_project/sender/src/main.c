@@ -5,7 +5,6 @@
 #include <zephyr/usb/usbd.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/drivers/sensor.h>
-#include <zephyr/drivers/gpio.h>
 
 #include <stdio.h>
 
@@ -17,9 +16,51 @@
 
 #include <string.h>
 #include <zephyr/bluetooth/conn.h>
-// Bluetooth configuration variables
+
+/*
+====================================================================================================
+Global Veriables
+====================================================================================================
+*/
+
 #define DEVICE_NAME CONFIG_BT_DEVICE_NAME
 #define DEVICE_NAME_LEN (sizeof(DEVICE_NAME) - 1)
+
+#define STACKSIZE       1024
+#define THREADA_PRIORITY 4
+#define THREADB_PRIORITY 4
+#define THREADC_PRIORITY 4
+
+#define TEAM_NUMBER 14 // Replace with your team number
+
+#define MAX_MESSAGE_LEN 30
+
+extern struct bt_conn *conn_connected = NULL;
+static char custom_message[MAX_MESSAGE_LEN] = "";
+
+struct sensor_value temp_readings[10];
+int reading_index = 0;
+
+static const struct gpio_dt_spec led_spec = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
+
+static struct bt_uuid_128 custom_service_uuid = BT_UUID_INIT_128(
+    0x00, 0x00, 0x44, 0x65, 0x66, 0x42, 0x56, 0xa4,
+    0xd3, 0x12, 0x9b, 0xe8, 0x67, 0x45, 0x3e, 0x12
+);
+
+static struct bt_uuid_128 custom_char_uuid = BT_UUID_INIT_128(
+    0x01, 0x00, 0x44, 0x65, 0x66, 0x42, 0x56, 0xa4,
+    0xd3, 0x12, 0x9b, 0xe8, 0x67, 0x45, 0x3e, 0x12
+);
+
+K_SEM_DEFINE(threadB_sem, 0, 1);
+
+/*
+====================================================================================================
+Bluetooth Ad and Sd Configuration
+- Defines the Bluetooth Ad and Sd data
+====================================================================================================
+*/
 
 static const struct bt_data ad[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
@@ -29,47 +70,54 @@ static const struct bt_data ad[] = {
 static const struct bt_data sd[] = {
     BT_DATA(BT_DATA_NAME_COMPLETE, DEVICE_NAME, DEVICE_NAME_LEN),
 };
-// Global variable for the connection
-extern struct bt_conn *conn_connected = NULL;
 
-/* Custom Service UUID */
-static struct bt_uuid_128 custom_service_uuid = BT_UUID_INIT_128(
-    /* UUID: 123e4567-e89b-12d3-a456-426665440000 */
-    0x00, 0x00, 0x44, 0x65, 0x66, 0x42, 0x56, 0xa4,
-    0xd3, 0x12, 0x9b, 0xe8, 0x67, 0x45, 0x3e, 0x12
-);
+/*
+====================================================================================================
+READ CUSTOM MESSAGE Method
+- Defines the message to be read when the custom characteristic is read
+====================================================================================================
+*/
 
-/* Custom Characteristic UUID */
-static struct bt_uuid_128 custom_char_uuid = BT_UUID_INIT_128(
-    /* UUID: 123e4567-e89b-12d3-a456-426665440001 */
-    0x01, 0x00, 0x44, 0x65, 0x66, 0x42, 0x56, 0xa4,
-    0xd3, 0x12, 0x9b, 0xe8, 0x67, 0x45, 0x3e, 0x12
-);
-
-#define MAX_MESSAGE_LEN 30
-static char custom_message[MAX_MESSAGE_LEN] = "";
-
-static ssize_t read_utf8(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                         void *buf, uint16_t len, uint16_t offset)
+static ssize_t read_custom_message(struct bt_conn *conn, 
+                                   const struct bt_gatt_attr *attr, 
+                                   void *buf, uint16_t len, uint16_t offset)
 {
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, custom_message, strlen(custom_message));
+    const char *value = attr->user_data;
+
+    uint16_t value_len = strlen(value);
+    if (offset > value_len) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+    }
+    
+    uint16_t read_len = MIN(len, value_len - offset);
+    memcpy(buf, value + offset, read_len);
+
+    return read_len;
 }
 
-
-
+/*
+====================================================================================================
+GAT Configuration
+- Defines the GATT attributes for the custom service
+====================================================================================================
+*/
 static struct bt_gatt_attr attrs[] = {
     BT_GATT_PRIMARY_SERVICE(&custom_service_uuid),
-    BT_GATT_CHARACTERISTIC(&custom_char_uuid.uuid,
-                           BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+    BT_GATT_CHARACTERISTIC(&custom_char_uuid.uuid, 
+                           BT_GATT_CHRC_READ, 
                            BT_GATT_PERM_READ, 
-                           read_utf8, NULL, &custom_message),
+                           read_custom_message, 
+                           NULL, 
+                           custom_message),
 };
-
-
 
 static struct bt_gatt_service my_service = BT_GATT_SERVICE(attrs);
 
-// METHODS
+/*
+====================================================================================================
+Bluetooth Connection Callbacks
+====================================================================================================
+*/
 
 static void connected(struct bt_conn *conn, uint8_t err)
 {
@@ -91,72 +139,26 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     }
 }
 
-#ifdef CONFIG_BT_LBS_SECURITY_ENABLED
-static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err)
-{
-    char addr[BT_ADDR_LE_STR_LEN];
-
-    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
-
-    if (!err) {
-        printk("Security changed: %s level %u\n", addr, level);
-    } else {
-        printk("Security failed: %s level %u err %d\n", addr, level, err);
-    }
-}
-#endif
-
 BT_CONN_CB_DEFINE(conn_callbacks) = {
     .connected = connected,
-    .disconnected = disconnected,
-#ifdef CONFIG_BT_LBS_SECURITY_ENABLED
-    .security_changed = security_changed,
-#endif
+    .disconnected = disconnected
 };
 
-#if defined(CONFIG_BT_LBS_SECURITY_ENABLED)
-// Keep the authentication callbacks as they are relevant for Bluetooth security
-static struct bt_conn_auth_cb conn_auth_callbacks = {
-    // Callback functions here...
-};
+/*
+====================================================================================================
+Thread Methods for A, B and C keypoint of the assignment
+- ThreadA reads the temperature sensor and prints the temperature to the console
+- ThreadB calculates the average temperature and sends it to the custom characteristic every 10 seconds
+- ThreadC turns on the LED if the temperature is over 30 degrees. If the temperature is under 30 degrees, the LED is turned off
+====================================================================================================
+*/
 
-static struct bt_conn_auth_info_cb conn_auth_info_callbacks = {
-    // Callback functions here...
-};
-#else
-static struct bt_conn_auth_cb conn_auth_callbacks;
-static struct bt_conn_auth_info_cb conn_auth_info_callbacks;
-#endif
-
-#define STACKSIZE       1024
-#define THREADA_PRIORITY 4
-#define THREADB_PRIORITY 4
-#define THREADC_PRIORITY 4
-
-#define TEAM_NUMBER 01 // Replace with your team number
-
-static const struct gpio_dt_spec led_spec = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
-
-/* Define semaphore to monitor instances of available resource */
-K_SEM_DEFINE(instance_monitor_sem, 10, 10);
-
-K_SEM_DEFINE(threadB_sem, 0, 1);
-
-volatile uint32_t available_instance_count = 10;
-
-/* Array to store last 10 temperature readings */
-struct sensor_value temp_readings[10];
-int reading_index = 0;
-
-/* Producer thread relinquishing access to instance */
 void threadA(void) {
     printk("threadA started\n");
     const struct device *dev;
     int ret;
     struct sensor_value temp_val;
     int message_number = 1;
-
-    printf("Starting temperature sensor example\n");
 
     dev = DEVICE_DT_GET_ANY(nordic_nrf_temp);
     if (dev == NULL) {
@@ -185,18 +187,18 @@ void threadA(void) {
         }
 
         printf("Temperature: %d.%06dC\n", temp_val.val1, temp_val.val2);
-        printf("T%02d|%02d|%02d\n", TEAM_NUMBER, message_number, temp_val.val1);
+        printf("T%02d%02d%02d\n", TEAM_NUMBER, message_number, temp_val.val1);
         message_number++;
 
-        // Store temperature reading
-        temp_readings[reading_index % 10] = temp_val;
-        reading_index++;
+        if (reading_index <= 200) {
+            temp_readings[reading_index % 10] = temp_val;
+            reading_index++;
+        }
 
         k_sleep(K_SECONDS(1));
     }
 }
 
-/* Function to calculate average temperature */
 int calculate_average_temperature() {
     long total = 0;
     for (int i = 0; i < 10; i++) {
@@ -208,39 +210,28 @@ int calculate_average_temperature() {
 void threadB(void) {
     printk("threadB started\n");
     int send_count = 0;
-    char message[MAX_MESSAGE_LEN]; // Local buffer to hold the message
+    char message[MAX_MESSAGE_LEN];
 
     while (send_count < 20) {
-        // Assuming this condition is your trigger to send a notification
         if (reading_index >= 10) {
             int average_temp = calculate_average_temperature();
-            snprintf(message, sizeof(message), "T%02d|%02d|%02d", TEAM_NUMBER, send_count + 1, average_temp);
+            snprintf(message, sizeof(message), "T%02d%02d%02d", TEAM_NUMBER, send_count + 1, average_temp);
 
-            // Update the global custom_message
             strncpy(custom_message, message, MAX_MESSAGE_LEN);
-
-            // Send notification if there is an active connection
-            if (conn_connected) {
-                // Ensure the second parameter of bt_gatt_notify is the correct attribute
-                bt_gatt_notify(conn_connected, &attrs[1], custom_message, strlen(custom_message));
-                printk("Notification sent: %s\n", custom_message);
-            } else {
-                printk("No active connection, notification not sent.\n");
-            }
 
             printf("Average Temperature: %dC\n", average_temp);
             printf("%s\n", message);
             send_count++;
-            k_sem_give(&threadB_sem);  // Signal threadC
+            k_sem_give(&threadB_sem);
         }
-        k_sleep(K_SECONDS(10)); // Adjust this value as needed for your use case
+        if(send_count == 20) {
+            printk("Entering low-power mode\n");
+            k_sleep(K_FOREVER);
+        } else {
+            k_sleep(K_SECONDS(10));
+        }
     }
-
-    printk("threadB finished sending notifications\n");
 }
-
-
-
 
 void threadC(void) {
     printk("threadC started\n");
@@ -257,26 +248,30 @@ void threadC(void) {
     }
 
     while (1) {
-        k_sem_take(&threadB_sem, K_FOREVER);  // Wait for signal from threadB
+        k_sem_take(&threadB_sem, K_FOREVER);
         struct sensor_value last_temp = temp_readings[(reading_index - 1) % 10];
-        if (last_temp.val1 > 30) {  // Temperature is over 30 degrees
-            gpio_pin_set_dt(&led_spec, 1);  // Turn on the LED
+        if (last_temp.val1 > 30) {
+            gpio_pin_set_dt(&led_spec, 1);
         } else {
-            gpio_pin_set_dt(&led_spec, 0);  // Turn off the LED
+            gpio_pin_set_dt(&led_spec, 0);
         }
     }
 }
 
-
-// Define and initialize threads
 K_THREAD_DEFINE(threadA_id, STACKSIZE, threadA, NULL, NULL, NULL, THREADA_PRIORITY, 0, 0);
 K_THREAD_DEFINE(threadB_id, STACKSIZE, threadB, NULL, NULL, NULL, THREADB_PRIORITY, 0, 0);
 K_THREAD_DEFINE(threadC_id, STACKSIZE, threadC, NULL, NULL, NULL, THREADC_PRIORITY, 0, 0);
 
-/* Main function required to enable USB communication */
+/*
+====================================================================================================
+Main Method
+- Initializes the Bluetooth and USB devices
+- Registers the custom service
+- LED starts OFF
+====================================================================================================
+*/
+
 int main() {
-
-
     if (usb_enable(NULL)) {
         printk("Failed to enable USB\n");
         return 1;
@@ -284,25 +279,7 @@ int main() {
 
     int err;
 
-    printk("Starting Bluetooth Peripheral example\n");
-
-    /*
-
-    if (IS_ENABLED(CONFIG_BT_LBS_SECURITY_ENABLED)) {
-        err = bt_conn_auth_cb_register(&conn_auth_callbacks);
-        if (err) {
-            printk("Failed to register authorization callbacks.\n");
-            return 1;
-        }
-
-        err = bt_conn_auth_info_cb_register(&conn_auth_info_callbacks);
-        if (err) {
-            printk("Failed to register authorization info callbacks.\n");
-            return 1;
-        }
-    }
-
-    */
+    printk("Starting BLE Communication...\n");
 
     err = bt_enable(NULL);
     if (err) {
@@ -310,7 +287,7 @@ int main() {
         return 1;
     }
 
-    printk("Bluetooth initialized\n");
+    printk("BLE Initialized\n");
 
     if (IS_ENABLED(CONFIG_SETTINGS)) {
         settings_load();
@@ -322,12 +299,11 @@ int main() {
         return 1;
     }
 
-    printk("Initializing GATT service\n");
     bt_gatt_service_register(&my_service);
 
-    printk("Advertising successfully started\n");
+    gpio_pin_set_dt(&led_spec, 0);
 
-    /* Busy wait for 5 seconds so you don't miss the initial printk statements to the terminal while it is connecting */
     k_busy_wait(5000000);
+
     return 0;
 }
