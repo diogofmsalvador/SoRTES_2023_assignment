@@ -53,6 +53,7 @@ static struct bt_uuid_128 custom_char_uuid = BT_UUID_INIT_128(
     0xd3, 0x12, 0x9b, 0xe8, 0x67, 0x45, 0x3e, 0x12
 );
 
+K_SEM_DEFINE(threadA_sem, 0, 1);
 K_SEM_DEFINE(threadB_sem, 0, 1);
 
 /*
@@ -160,6 +161,8 @@ void threadA(void) {
     struct sensor_value temp_val;
     int message_number = 1;
 
+    int reading_interval = 200;
+
     dev = DEVICE_DT_GET_ANY(nordic_nrf_temp);
     if (dev == NULL) {
         printf("Could not get device for temperature sensor\n");
@@ -172,6 +175,11 @@ void threadA(void) {
     }
 
     while (1) {
+        if(reading_index >= reading_interval){
+            printk("Entering Low Power Mode\n");
+            k_sleep(K_FOREVER);
+        }
+
         ret = sensor_sample_fetch(dev);
         if (ret) {
             printf("Failed to fetch sample from sensor: %d\n", ret);
@@ -190,9 +198,13 @@ void threadA(void) {
         printf("T%02d%02d%02d\n", TEAM_NUMBER, message_number, temp_val.val1);
         message_number++;
 
-        if (reading_index <= 200) {
+        if (reading_index < reading_interval) {
             temp_readings[reading_index % 10] = temp_val;
             reading_index++;
+            if (reading_index % 10 == 0)
+            {
+                k_sem_give(&threadA_sem);
+            }
         }
 
         k_sleep(K_SECONDS(1));
@@ -212,24 +224,17 @@ void threadB(void) {
     int send_count = 0;
     char message[MAX_MESSAGE_LEN];
 
-    while (send_count < 20) {
-        if (reading_index >= 10) {
-            int average_temp = calculate_average_temperature();
-            snprintf(message, sizeof(message), "T%02d%02d%02d", TEAM_NUMBER, send_count + 1, average_temp);
+    while (1) {
+        k_sem_take(&threadA_sem, K_FOREVER);
+        int average_temp = calculate_average_temperature();
+        snprintf(message, sizeof(message), "T%02d%02d%02d", TEAM_NUMBER, send_count + 1, average_temp);
 
-            strncpy(custom_message, message, MAX_MESSAGE_LEN);
+        strncpy(custom_message, message, MAX_MESSAGE_LEN);
 
-            printf("Average Temperature: %dC\n", average_temp);
-            printf("%s\n", message);
-            send_count++;
-            k_sem_give(&threadB_sem);
-        }
-        if(send_count == 20) {
-            printk("Entering low-power mode\n");
-            k_sleep(K_FOREVER);
-        } else {
-            k_sleep(K_SECONDS(10));
-        }
+        printf("Average Temperature: %dC\n", average_temp);
+        printf("%s\n", message);
+        send_count++;
+        k_sem_give(&threadB_sem);
     }
 }
 
